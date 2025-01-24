@@ -8,59 +8,161 @@ import {uploadOnCloudinary} from "../utils/cloudinary.js"
 
 
 const getAllVideos = asyncHandler(async (req, res) => {
-    // console.log("getAllVideos start");
-    
-    const { page = 1, limit = 10, query, sortBy = 'createdAt', sortType = 'desc', ownerId = null } = req.query;
+    const { 
+        page = 1, 
+        limit = 10, 
+        query, 
+        sortBy = 'createdAt', 
+        sortType = 'desc', 
+        ownerId = null 
+    } = req.query;
 
     try {
-        const queryFilter = {};
+        const pipeline = [];
+        const pageNumber = Math.max(1, parseInt(page));
+        const pageSize = Math.max(1, parseInt(limit));
 
-        // If a query is provided, search for matching titles or descriptions
-        if (query?.trim()) {
-            queryFilter.$or = [
-                { title: { $regex: query, $options: 'i' } },
-                { description: { $regex: query, $options: 'i' } }
-            ];
-        }
+        // Base match conditions
+        const matchStage = {};
 
+        // Handle ownerId if provided
         if (ownerId && ownerId !== "null") {
             if (mongoose.Types.ObjectId.isValid(ownerId)) {
-                queryFilter.owner = new mongoose.Types.ObjectId(ownerId);
+                matchStage.owner = new mongoose.Types.ObjectId(ownerId);
             } else {
                 return res.status(400).json(new ApiError(400, "Invalid ownerId format"));
             }
         }
-        
 
-        const pageNumber = Math.max(1, parseInt(page));
-        const pageSize = Math.max(1, parseInt(limit));
+        // If query exists, use custom scoring for prioritized search
+        if (query?.trim()) {
+            const searchTerm = query.trim();
+            
+            pipeline.push(
+                {
+                    $match: {
+                        $or: [
+                            { title: { $regex: searchTerm, $options: 'i' } },
+                            { description: { $regex: searchTerm, $options: 'i' } }
+                        ],
+                        ...matchStage
+                    }
+                },
+                {
+                    $addFields: {
+                        searchPriority: {
+                            $switch: {
+                                branches: [
+                                    // Exact title match (highest priority)
+                                    {
+                                        case: { 
+                                            $regexMatch: { 
+                                                input: { $toLower: "$title" }, 
+                                                regex: `^${searchTerm.toLowerCase()}$`
+                                            } 
+                                        },
+                                        then: 3
+                                    },
+                                    // Partial title match (medium priority)
+                                    {
+                                        case: { 
+                                            $regexMatch: { 
+                                                input: { $toLower: "$title" }, 
+                                                regex: searchTerm.toLowerCase()
+                                            } 
+                                        },
+                                        then: 2
+                                    },
+                                    // Description match (lowest priority)
+                                    {
+                                        case: { 
+                                            $regexMatch: { 
+                                                input: { $toLower: "$description" }, 
+                                                regex: searchTerm.toLowerCase()
+                                            } 
+                                        },
+                                        then: 1
+                                    }
+                                ],
+                                default: 0
+                            }
+                        }
+                    }
+                },
+                {
+                    $sort: {
+                        searchPriority: -1,
+                        [sortBy]: sortType === 'desc' ? -1 : 1
+                    }
+                }
+            );
+        } else {
+            // If no search query, use regular sorting and matching
+            pipeline.push(
+                {
+                    $match: matchStage
+                },
+                {
+                    $sort: {
+                        [sortBy]: sortType === 'desc' ? -1 : 1
+                    }
+                }
+            );
+        }
 
-        const pipeline = [
-            { $match: queryFilter },
-            { $sample: { size: pageSize * 10 } }, // Fetch random samples for the pagination
-            { $sort: { [sortBy]: sortType === 'desc' ? -1 : 1 } }, // Sort by the provided field and type
-            { $skip: (pageNumber - 1) * pageSize }, // Skip the number of documents to start pagination
-            { $limit: pageSize } // Limit the number of documents per page
-        ];
+        // Add randomization if no search query
+        if (!query?.trim()) {
+            pipeline.push({ $sample: { size: pageSize * 10 } });
+        }
 
+        // Add pagination stages
+        pipeline.push(
+            {
+                $skip: (pageNumber - 1) * pageSize
+            },
+            {
+                $limit: pageSize
+            }
+        );
+
+        // Execute the pipeline
         const videos = await Video.aggregate(pipeline);
 
-        const totalCount = await Video.countDocuments(queryFilter);
-        videos.totalVideos = totalCount;
+        // Get total count for pagination
+        const countPipeline = [
+            {
+                $match: query?.trim() 
+                    ? {
+                        $or: [
+                            { title: { $regex: query, $options: 'i' } },
+                            { description: { $regex: query, $options: 'i' } }
+                        ],
+                        ...matchStage
+                    }
+                    : matchStage
+            },
+            {
+                $count: 'total'
+            }
+        ];
+
+        const [countResult] = await Video.aggregate(countPipeline);
+        const totalCount = countResult?.total || 0;
 
         return res.status(200).json(
             new ApiResponse(200, videos, "Videos fetched successfully", {
                 total: totalCount,
                 totalPages: Math.ceil(totalCount / pageSize),
-                currentPage: pageNumber
+                currentPage: pageNumber,
+                hasNextPage: pageNumber < Math.ceil(totalCount / pageSize)
             })
         );
+
     } catch (error) {
-        console.error("Error in getAllVideos:", error.message);
-        res.status(error.statusCode || 500).json(new ApiError(error.statusCode || 500, error.message));
+        console.error("Error in getAllVideos:", error);
+        throw new ApiError(error.statusCode || 500, error.message || "Internal server error");
     }
 });
-
 
 
 const publishAVideo = asyncHandler(async (req, res) => {

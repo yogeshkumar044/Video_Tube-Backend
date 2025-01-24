@@ -32,12 +32,12 @@ const toggleVideoLike = asyncHandler(async (req, res) => {
             existingLike.LikedorDisliked = LikedorDisliked;
             await existingLike.save();
             message = LikedorDisliked === 1 ? "Video liked" : "Video disliked";
-            console.log(message);
+            // console.log(message);
         } else {
             // Remove the like/dislike if the same action is performed again
             await Like.findByIdAndDelete(existingLike._id);
             message = "Video like/dislike removed";
-            console.log("Video like/dislike removed");
+            // console.log("Video like/dislike removed");
         }
     } else {
         // Create a new like/dislike entry if one doesn't exist
@@ -52,7 +52,7 @@ const toggleVideoLike = asyncHandler(async (req, res) => {
         }
 
         message = LikedorDisliked === 1 ? "Video liked" : "Video disliked";
-        console.log(message);
+        // console.log(message);
     }
 
     // Return the response with a status of 200 and the appropriate message
